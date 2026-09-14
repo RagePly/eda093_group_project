@@ -25,6 +25,8 @@
 #include <readline/history.h>
 
 // The <unistd.h> header is your gateway to the OS's process management facilities.
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "parse.h"
@@ -33,6 +35,7 @@ static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
 void exit_cleanup(void);
+void handle_cmd(Command *p);
 
 int main(void)
 {
@@ -63,6 +66,8 @@ int main(void)
       {
         // Print the parsed command
         print_cmd(&cmd);
+
+        handle_cmd(&cmd);
       }
       else
       {
@@ -156,4 +161,72 @@ void stripwhite(char *string)
   }
 
   string[++i] = '\0';
+}
+
+struct RunInfo {
+  int stdin_fd, stdout_fd, stderr_fd;
+  char *program;
+  char **args;
+};
+
+pid_t run_program(struct RunInfo *run_info)
+{
+  pid_t pid = fork();
+
+  if (pid) return pid;
+
+  if (run_info->stdin_fd != STDIN_FILENO)
+  {
+    dup2(run_info->stdin_fd, STDIN_FILENO);
+  }
+
+  if (run_info->stdout_fd != STDOUT_FILENO)
+  {
+    dup2(run_info->stdout_fd, STDOUT_FILENO);
+  }
+
+  if (run_info->stderr_fd != STDERR_FILENO)
+  {
+    dup2(run_info->stderr_fd, STDERR_FILENO);
+  }
+  
+  int error_id = execvp(run_info->program, run_info->args);
+
+  perror("failed to launch program");
+  exit(error_id);;
+}
+
+void handle_cmd(Command *p)
+{
+  if (!p->pgm) return;
+
+  if (p->pgm->next)
+  {
+    fprintf(stderr, "TODO: handle pipe:ing\n");
+    exit(1);
+  }
+
+  if (p->background)
+  {
+    fprintf(stderr, "TODO: handle background processes\n");
+    exit(1);
+  }
+
+
+  if (p->rstderr || p->rstdin || p->rstdout)
+  {
+    fprintf(stderr, "TODO: handle I/O redirection\n");
+    exit(1);
+  }
+
+  struct RunInfo ri = {
+    .stdin_fd = STDIN_FILENO,
+    .stdout_fd = STDOUT_FILENO,
+    .stderr_fd = STDERR_FILENO,
+    .program = p->pgm->pgmlist[0],
+    .args = p->pgm->pgmlist,
+  };
+
+  pid_t child = run_program(&ri);
+  (void)waitpid(child, NULL, 0);
 }
