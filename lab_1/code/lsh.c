@@ -32,6 +32,7 @@
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
+void exit_cleanup(void);
 
 int main(void)
 {
@@ -39,6 +40,15 @@ int main(void)
   {
     char *line;
     line = readline("> ");
+
+    // CTRL-D encountered
+    // MAN: readline returns NULL if EOF is encountered on a blank line.
+    //      If line is not blank, EOF treated as a newline and the subsequent
+    //      readline returns the NULL string.
+    if (line == NULL)
+    {
+      exit_cleanup();
+    }
 
     // Remove leading and trailing whitespace from the line
     stripwhite(line);
@@ -65,6 +75,15 @@ int main(void)
   }
 
   return 0;
+}
+
+/*
+ * Exit the shell, cleaning up any child processes
+ */
+void exit_cleanup(void)
+{
+  printf("TODO: cleanup children\n");
+  exit(0);
 }
 
 /*
