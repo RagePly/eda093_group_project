@@ -8,6 +8,7 @@ RUN apt-get update -y \
     libreadline-dev \
     libncurses5-dev \
     libncursesw5-dev \
+    tmux \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work
