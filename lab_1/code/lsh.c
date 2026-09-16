@@ -32,6 +32,7 @@
 
 #include "parse.h"
 
+/* Forward Declarations */
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
@@ -58,12 +59,21 @@ struct JobHandle {
 struct JobHandle* job_push(struct JobHandle *top);
 struct JobHandle* job_pop(struct JobHandle *top);
 void job_await(struct JobHandle *handle, int terminate);
+/* End declarations */
 
+/* Linked list of process handles
+ */
 struct JobHandle *g_jobs = NULL;
 
 int main(void)
 {
+  /* Ignore interactive interrupts. This setting is inherited by child-processes
+   */
   signal(SIGINT, SIG_IGN);
+
+  /* Ignore child terminatation/stop signals, meaning the child-process is
+   * reaped by the OS upon exit/termination. (man-page _Exit(3p))
+   */
   signal(SIGCHLD, SIG_IGN);
 
   for (;;)
@@ -71,10 +81,11 @@ int main(void)
     char *line;
     line = readline("> ");
 
-    // CTRL-D encountered
-    // MAN: readline returns NULL if EOF is encountered on a blank line.
-    //      If line is not blank, EOF treated as a newline and the subsequent
-    //      readline returns the NULL string.
+    /* CTRL-D encountered
+     * MAN: readline returns NULL if EOF is encountered on a blank line.
+     *      If line is not blank, EOF treated as a newline and the subsequent
+     *      readline returns the NULL string.
+     */
     if (line == NULL)
     {
       exit_cleanup(0);
@@ -109,13 +120,14 @@ int main(void)
   return 0;
 }
 
-/*
- * Exit the shell, cleaning up any child processes
+/* Exit the shell, cleaning up any child processes
  */
 void exit_cleanup(int retcode)
 {
   while (g_jobs)
   {
+    /* Send a SIGTERM signal to the child
+     */
     job_await(g_jobs, 1);
     g_jobs = job_pop(g_jobs);
   }
@@ -234,8 +246,13 @@ pid_t run_program(struct RunInfo *run_info)
 
   if (pid) return pid;
 
+  /* This process and it's children should use the default SIGCHLD handler
+   */
   signal(SIGCHLD, SIG_DFL);
 
+  /* The process should be terminated when an interactive interrupt
+   * is issued (CTRL-C)
+   */
   if (run_info->is_interactive) signal(SIGINT, SIG_DFL);
 
   if (run_info->stdin_fd != STDIN_FILENO)
@@ -289,17 +306,24 @@ void handle_cmd(Command *p)
 
   pid_t child = run_program(&ri);
 
+  /* if the job is to be run in the background, push it to the 
+   * job list
+   */
   if (p->background)
   {
     g_jobs = job_push(g_jobs);
     g_jobs->pid = child;
   }
+  /* The job is run in the foreground, await termination
+   */
   else
   {
     (void)waitpid(child, NULL, 0);
   }
 }
 
+/* Allocate an uninitialized handle and push it to the linked-list
+ */
 struct JobHandle* job_push(struct JobHandle *top)
 {
   struct JobHandle *handle = malloc(sizeof(struct JobHandle));
@@ -316,6 +340,9 @@ struct JobHandle* job_push(struct JobHandle *top)
   return handle;
 }
 
+/* Remove the handle from the linked-list, freeing allocated memory
+ * (the process is not awaited/terminated!)
+ */
 struct JobHandle* job_pop(struct JobHandle *top)
 {
   if (top == NULL)
@@ -329,6 +356,8 @@ struct JobHandle* job_pop(struct JobHandle *top)
   return next;
 }
 
+/* Await the process, optionally sending a termination signal 
+ */
 void job_await(struct JobHandle *handle, int terminate)
 {
   if (handle->pid <= 0) return;
