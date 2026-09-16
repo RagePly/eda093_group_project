@@ -199,6 +199,8 @@ pid_t run_program(struct RunInfo *run_info)
 
   if (pid) return pid;
 
+  signal(SIGCHLD, SIG_DFL);
+
   if (run_info->is_interactive) signal(SIGINT, SIG_DFL);
 
   if (run_info->stdin_fd != STDIN_FILENO)
