@@ -305,6 +305,8 @@ void handle_cmd(Command *p)
     if (fd < 0) 
     {
       perror("could not open file for writing");
+
+      if (stdin_fd != STDIN_FILENO) close(stdin_fd);
       return;
     }
     stdout_fd = fd;
