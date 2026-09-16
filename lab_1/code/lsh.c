@@ -285,6 +285,8 @@ void handle_cmd(Command *p)
     exit_cleanup(1);
   }
   
+  /* check for I/O redirection */
+
   int stdin_fd = STDIN_FILENO;
   int stdout_fd = STDOUT_FILENO;
 
@@ -301,11 +303,14 @@ void handle_cmd(Command *p)
 
   if (p->rstdout)
   {
+    /* create with permissions: "-rw-r--r--", user R/W, group R and other R
+     */
     int fd = open(p->rstdout, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (fd < 0) 
     {
       perror("could not open file for writing");
 
+      /* close the already opened file */
       if (stdin_fd != STDIN_FILENO) close(stdin_fd);
       return;
     }
