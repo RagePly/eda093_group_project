@@ -208,7 +208,7 @@ int handle_builtin(char **args)
  }
  if (strcmp(args[0], "exit") == 0)
  {
-  exit_cleanup();
+  exit_cleanup(0);
  }
  return 0;
 }
