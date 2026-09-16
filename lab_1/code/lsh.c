@@ -18,6 +18,7 @@
  */
 #include <assert.h>
 #include <ctype.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,11 +35,34 @@
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
-void exit_cleanup(void);
+void exit_cleanup(int retcode);
 void handle_cmd(Command *p);
+
+struct RunInfo {
+  int stdin_fd, stdout_fd, stderr_fd;
+  int is_interactive;
+  char *program;
+  char **args;
+};
+
+pid_t run_program(struct RunInfo *run_info);
+
+struct JobHandle {
+  pid_t pid;
+  struct JobHandle *next;
+};
+
+struct JobHandle* job_push(struct JobHandle *top);
+struct JobHandle* job_pop(struct JobHandle *top);
+void job_await(struct JobHandle *handle, int terminate);
+
+struct JobHandle *g_jobs;
 
 int main(void)
 {
+  signal(SIGINT, SIG_IGN);
+  signal(SIGCHLD, SIG_IGN);
+
   for (;;)
   {
     char *line;
@@ -50,7 +74,7 @@ int main(void)
     //      readline returns the NULL string.
     if (line == NULL)
     {
-      exit_cleanup();
+      exit_cleanup(0);
     }
 
     // Remove leading and trailing whitespace from the line
@@ -85,10 +109,15 @@ int main(void)
 /*
  * Exit the shell, cleaning up any child processes
  */
-void exit_cleanup(void)
+void exit_cleanup(int retcode)
 {
-  printf("TODO: cleanup children\n");
-  exit(0);
+  while (g_jobs)
+  {
+    job_await(g_jobs, 1);
+    g_jobs = job_pop(g_jobs);
+  }
+
+  exit(retcode);
 }
 
 /*
@@ -163,17 +192,14 @@ void stripwhite(char *string)
   string[++i] = '\0';
 }
 
-struct RunInfo {
-  int stdin_fd, stdout_fd, stderr_fd;
-  char *program;
-  char **args;
-};
 
 pid_t run_program(struct RunInfo *run_info)
 {
   pid_t pid = fork();
 
   if (pid) return pid;
+
+  if (run_info->is_interactive) signal(SIGINT, SIG_DFL);
 
   if (run_info->stdin_fd != STDIN_FILENO)
   {
@@ -193,8 +219,9 @@ pid_t run_program(struct RunInfo *run_info)
   int error_id = execvp(run_info->program, run_info->args);
 
   perror("failed to launch program");
-  exit(error_id);;
+  exit(error_id);
 }
+
 
 void handle_cmd(Command *p)
 {
@@ -203,30 +230,71 @@ void handle_cmd(Command *p)
   if (p->pgm->next)
   {
     fprintf(stderr, "TODO: handle pipe:ing\n");
-    exit(1);
+    exit_cleanup(1);
   }
-
-  if (p->background)
-  {
-    fprintf(stderr, "TODO: handle background processes\n");
-    exit(1);
-  }
-
 
   if (p->rstderr || p->rstdin || p->rstdout)
   {
     fprintf(stderr, "TODO: handle I/O redirection\n");
-    exit(1);
+    exit_cleanup(1);
   }
 
   struct RunInfo ri = {
     .stdin_fd = STDIN_FILENO,
     .stdout_fd = STDOUT_FILENO,
     .stderr_fd = STDERR_FILENO,
+    .is_interactive = !p->background,
     .program = p->pgm->pgmlist[0],
     .args = p->pgm->pgmlist,
   };
 
   pid_t child = run_program(&ri);
-  (void)waitpid(child, NULL, 0);
+
+  if (p->background)
+  {
+    g_jobs = job_push(g_jobs);
+    g_jobs->pid = child;
+  }
+  else
+  {
+    (void)waitpid(child, NULL, 0);
+  }
+}
+
+struct JobHandle* job_push(struct JobHandle *top)
+{
+  struct JobHandle *handle = malloc(sizeof(struct JobHandle));
+
+  if (!handle)
+  {
+    perror("failed to allocate job handle");
+    exit_cleanup(1);
+  }
+
+  handle->pid = -1;
+  handle->next = top;
+
+  return handle;
+}
+
+struct JobHandle* job_pop(struct JobHandle *top)
+{
+  if (top == NULL)
+  {
+    fprintf(stderr, "cannot pop last element");
+    exit_cleanup(1);
+  }
+
+  struct JobHandle *next = top->next;
+  free(top);
+  return next;
+}
+
+void job_await(struct JobHandle *handle, int terminate)
+{
+  if (handle->pid <= 0) return;
+
+  if (terminate) kill(handle->pid, SIGTERM);
+
+  (void)waitpid(handle->pid, NULL, 0);
 }
