@@ -37,6 +37,9 @@ static void print_pgm(Pgm *p);
 void stripwhite(char *);
 void exit_cleanup(int retcode);
 void handle_cmd(Command *p);
+int handle_builtin(char **args);
+void builtin_cd(char **args);
+
 
 struct RunInfo {
   int stdin_fd, stdout_fd, stderr_fd;
@@ -192,6 +195,38 @@ void stripwhite(char *string)
   string[++i] = '\0';
 }
 
+int handle_builtin(char **args) 
+{
+ if (args == NULL || args[0] == NULL) 
+ {
+  return 0;
+ }
+ if (strcmp(args[0], "cd") == 0)
+ {
+  builtin_cd(args);
+  return 1;
+ }
+ if (strcmp(args[0], "exit") == 0)
+ {
+  exit_cleanup();
+ }
+ return 0;
+}
+
+void builtin_cd(char **args)
+{
+  char *dir = args[1];
+
+  if (dir == NULL)
+  {
+    dir = getenv("HOME");
+  }
+
+  if (chdir(dir) != 0)
+  {
+    perror("cd failed");
+  }
+}
 
 pid_t run_program(struct RunInfo *run_info)
 {
@@ -228,6 +263,8 @@ pid_t run_program(struct RunInfo *run_info)
 void handle_cmd(Command *p)
 {
   if (!p->pgm) return;
+
+  if (handle_builtin(p->pgm->pgmlist)) return; 
 
   if (p->pgm->next)
   {
