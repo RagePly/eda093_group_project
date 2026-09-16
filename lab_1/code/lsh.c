@@ -29,6 +29,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "parse.h"
 
@@ -43,7 +44,7 @@ void builtin_cd(char **args);
 
 
 struct RunInfo {
-  int stdin_fd, stdout_fd, stderr_fd;
+  int stdin_fd, stdout_fd;
   int is_interactive;
   char *program;
   char **args;
@@ -265,11 +266,6 @@ pid_t run_program(struct RunInfo *run_info)
     dup2(run_info->stdout_fd, STDOUT_FILENO);
   }
 
-  if (run_info->stderr_fd != STDERR_FILENO)
-  {
-    dup2(run_info->stderr_fd, STDERR_FILENO);
-  }
-  
   int error_id = execvp(run_info->program, run_info->args);
 
   perror("failed to launch program");
@@ -288,23 +284,45 @@ void handle_cmd(Command *p)
     fprintf(stderr, "TODO: handle pipe:ing\n");
     exit_cleanup(1);
   }
+  
+  int stdin_fd = STDIN_FILENO;
+  int stdout_fd = STDOUT_FILENO;
 
-  if (p->rstderr || p->rstdin || p->rstdout)
+  if (p->rstdin)
   {
-    fprintf(stderr, "TODO: handle I/O redirection\n");
-    exit_cleanup(1);
+    int fd = open(p->rstdin, O_RDONLY);
+    if (fd < 0) 
+    {
+      perror("could not open file for reading");
+      return;
+    }
+    stdin_fd = fd;
+  }
+
+  if (p->rstdout)
+  {
+    int fd = open(p->rstdout, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    if (fd < 0) 
+    {
+      perror("could not open file for writing");
+      return;
+    }
+    stdout_fd = fd;
   }
 
   struct RunInfo ri = {
-    .stdin_fd = STDIN_FILENO,
-    .stdout_fd = STDOUT_FILENO,
-    .stderr_fd = STDERR_FILENO,
+    .stdin_fd = stdin_fd,
+    .stdout_fd = stdout_fd,
     .is_interactive = !p->background,
     .program = p->pgm->pgmlist[0],
     .args = p->pgm->pgmlist,
   };
 
   pid_t child = run_program(&ri);
+
+  /* Close files */
+  if (stdin_fd != STDIN_FILENO) close(stdin_fd);
+  if (stdout_fd != STDOUT_FILENO) close(stdout_fd);
 
   /* if the job is to be run in the background, push it to the 
    * job list
