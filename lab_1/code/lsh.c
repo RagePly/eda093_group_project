@@ -56,7 +56,7 @@ struct JobHandle* job_push(struct JobHandle *top);
 struct JobHandle* job_pop(struct JobHandle *top);
 void job_await(struct JobHandle *handle, int terminate);
 
-struct JobHandle *g_jobs;
+struct JobHandle *g_jobs = NULL;
 
 int main(void)
 {
