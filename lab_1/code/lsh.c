@@ -105,6 +105,8 @@ int main(void)
       {
         // Print the parsed command
         print_cmd(&cmd);
+        // running the command pipeline
+        run_command(&cmd);
 
         handle_cmd(&cmd);
       }
@@ -345,6 +347,116 @@ void handle_cmd(Command *p)
   {
     (void)waitpid(child, NULL, 0);
   }
+}
+
+/*the list for pgm will look like this: 
+ *head -> ["wc", "-w", NULL] -> ["grep", "out", NULL] -> ["ls", NULL] -> NULL
+ *i.e it will traverse the list in reverse order of the commands in the pipeline
+ */
+typedef struct pgm {
+    struct pgm *next;   // points to the PREVIOUS command in the pipeline
+    char **pgmlist;     // argv-style array for this command
+} Pgm;
+
+
+
+/* Count how many programs are in the pipeline */
+static int count_pgms(Pgm *p)
+{
+    int n = 0;
+    while (p != NULL) {
+        n++;
+        p = p->next;
+    }
+    return n;
+}
+
+/*
+ * Execute a full Command (a pipeline of Pgms).
+ * cmd->pgm is the LAST command in the pipeline; traversing ->next
+ * walks backwards to the FIRST command.
+ */
+static void run_command(Command *cmd)
+{
+    int n = count_pgms(cmd->pgm);
+    int pipefds[2 * (n > 1 ? n - 1 : 0)];
+
+    // Create n-1 pipes up front
+    for (int i = 0; i < n - 1; i++) {
+        if (pipe(pipefds + i * 2) < 0) {
+            perror("pipe");
+            exit(1);
+        }
+    }
+
+    /*
+     * Walk the (reverse-order) list and assign each Pgm an index
+     * from 0 (first command executed) to n-1 (last command executed),
+     * so pipefds[i] connects command i's stdout to command i+1's stdin.
+     */
+    Pgm *p = cmd->pgm;
+    int index = n - 1; // p starts at the LAST command
+    pid_t pids[n];
+
+    while (p != NULL) {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            // ----- CHILD -----
+
+            // stdin: from previous pipe, unless this is the first command
+            if (index == 0) {
+                if (cmd->rstdin != NULL) {
+                    int fd = open(cmd->rstdin, O_RDONLY);
+                    if (fd < 0) { perror("open rstdin"); exit(1); }
+                    dup2(fd, STDIN_FILENO);
+                    close(fd);
+                }
+            } else {
+                dup2(pipefds[(index - 1) * 2], STDIN_FILENO);
+            }
+
+            // stdout: to next pipe, unless this is the last command
+            if (index == n - 1) {
+                if (cmd->rstdout != NULL) {
+                    int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    if (fd < 0) { perror("open rstdout"); exit(1); }
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                }
+            } else {
+                dup2(pipefds[index * 2 + 1], STDOUT_FILENO);
+            }
+
+            // Close all pipe fds in the child — every single one
+            for (int i = 0; i < 2 * (n - 1); i++) {
+                close(pipefds[i]);
+            }
+
+            execvp(p->pgmlist[0], p->pgmlist);
+            perror("execvp");
+            exit(1);
+        } else if (pid > 0) {
+            pids[index] = pid;
+        } else {
+            perror("fork");
+            exit(1);
+        }
+
+        p = p->next;
+        index--;
+    }
+
+    // ----- PARENT -----
+    for (int i = 0; i < 2 * (n - 1); i++) {
+        close(pipefds[i]);
+    }
+
+    if (!cmd->background) {
+        for (int i = 0; i < n; i++) {
+            waitpid(pids[i], NULL, 0);
+        }
+    }
 }
 
 /* Allocate an uninitialized handle and push it to the linked-list
