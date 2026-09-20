@@ -41,7 +41,7 @@ void exit_cleanup(int retcode);
 void handle_cmd(Command *p);
 int handle_builtin(char **args);
 void builtin_cd(char **args);
-
+static void run_command(Command *cmd);
 
 struct RunInfo {
   int stdin_fd, stdout_fd;
@@ -348,17 +348,6 @@ void handle_cmd(Command *p)
     (void)waitpid(child, NULL, 0);
   }
 }
-
-/*the list for pgm will look like this: 
- *head -> ["wc", "-w", NULL] -> ["grep", "out", NULL] -> ["ls", NULL] -> NULL
- *i.e it will traverse the list in reverse order of the commands in the pipeline
- */
-typedef struct pgm {
-    struct pgm *next;   // points to the PREVIOUS command in the pipeline
-    char **pgmlist;     // argv-style array for this command
-} Pgm;
-
-
 
 /* Count how many programs are in the pipeline */
 static int count_pgms(Pgm *p)
