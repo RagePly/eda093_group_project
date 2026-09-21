@@ -38,19 +38,10 @@ static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
 void exit_cleanup(int retcode);
-void handle_cmd(Command *p);
+void handle_cmd(Command *cmd);
 int handle_builtin(char **args);
 void builtin_cd(char **args);
-
-
-struct RunInfo {
-  int stdin_fd, stdout_fd;
-  int is_interactive;
-  char *program;
-  char **args;
-};
-
-pid_t run_program(struct RunInfo *run_info);
+static int count_pgms(Pgm *p);
 
 struct JobHandle {
   pid_t pid;
@@ -59,12 +50,15 @@ struct JobHandle {
 
 struct JobHandle* job_push(struct JobHandle *top);
 struct JobHandle* job_pop(struct JobHandle *top);
+struct JobHandle* job_join(struct JobHandle *top, struct JobHandle *bottom);
 void job_await(struct JobHandle *handle, int terminate);
+void job_await_all(struct JobHandle** handle, int terminate);
 /* End declarations */
 
 /* Linked list of process handles
  */
 struct JobHandle *g_jobs = NULL;
+struct JobHandle *g_foreground = NULL;
 
 int main(void)
 {
@@ -106,8 +100,6 @@ int main(void)
         // Print the parsed command
         print_cmd(&cmd);
         // running the command pipeline
-        run_command(&cmd);
-
         handle_cmd(&cmd);
       }
       else
@@ -127,13 +119,12 @@ int main(void)
  */
 void exit_cleanup(int retcode)
 {
-  while (g_jobs)
-  {
-    /* Send a SIGTERM signal to the child
-     */
-    job_await(g_jobs, 1);
-    g_jobs = job_pop(g_jobs);
-  }
+  /* FIXME: this might not be necessary since we're calling exit, but it's 
+   * probably good housekeeping. What's the approach?
+   */
+
+  job_await_all(&g_jobs, 1);
+  job_await_all(&g_foreground, 1);
 
   exit(retcode);
 }
@@ -243,220 +234,161 @@ void builtin_cd(char **args)
   }
 }
 
-pid_t run_program(struct RunInfo *run_info)
+
+void handle_cmd(Command *cmd)
 {
-  pid_t pid = fork();
+  if (!cmd->pgm) return;
 
-  if (pid) return pid;
+  /* Only handle builtins if there is no pipeing (same as in sh) */
+  if (!cmd->pgm->next && handle_builtin(cmd->pgm->pgmlist)) return;
 
-  /* This process and it's children should use the default SIGCHLD handler
+  int n = count_pgms(cmd->pgm);
+  /* Allocate a VLA on the stack, this is automatically freed on scope exit
    */
-  signal(SIGCHLD, SIG_DFL);
+  int pipefds[2 * (n > 1 ? n - 1 : 0)];
 
-  /* The process should be terminated when an interactive interrupt
-   * is issued (CTRL-C)
-   */
-  if (run_info->is_interactive) signal(SIGINT, SIG_DFL);
-
-  if (run_info->stdin_fd != STDIN_FILENO)
+  /* Create n-1 pipes up front */
+  for (int i = 0; i < n - 1; i++)
   {
-    dup2(run_info->stdin_fd, STDIN_FILENO);
+    if (pipe(&pipefds[i * 2]) < 0)
+    {
+      perror("pipe");
+      exit_cleanup(1);
+    }
   }
 
-  if (run_info->stdout_fd != STDOUT_FILENO)
+  /*
+   * Walk the (reverse-order) list and assign each Pgm an index
+   * from 0 (first command executed) to n-1 (last command executed),
+   * so pipefds[i] connects command i's stdout to command i+1's stdin.
+   */
+  Pgm *p = cmd->pgm;
+  int index = n - 1; // p starts at the LAST command
+
+  if (g_foreground)
   {
-    dup2(run_info->stdout_fd, STDOUT_FILENO);
-  }
-
-  int error_id = execvp(run_info->program, run_info->args);
-
-  perror("failed to launch program");
-  exit(error_id);
-}
-
-
-void handle_cmd(Command *p)
-{
-  if (!p->pgm) return;
-
-  if (handle_builtin(p->pgm->pgmlist)) return; 
-
-  if (p->pgm->next)
-  {
-    fprintf(stderr, "TODO: handle pipe:ing\n");
+    fprintf(stderr, "can't spawn new processes if foreground processes are running\n");
     exit_cleanup(1);
   }
-  
-  /* check for I/O redirection */
 
-  int stdin_fd = STDIN_FILENO;
-  int stdout_fd = STDOUT_FILENO;
-
-  if (p->rstdin)
+  while (p != NULL)
   {
-    int fd = open(p->rstdin, O_RDONLY);
-    if (fd < 0) 
+    pid_t pid = fork();
+
+    if (pid == 0)
     {
-      perror("could not open file for reading");
-      return;
+      /* This process and it's children should use the default SIGCHLD handler
+       */
+      signal(SIGCHLD, SIG_DFL);
+
+      /* The process should be terminated when an interactive interrupt
+       * is issued (CTRL-C)
+       */
+      if (!cmd->background) signal(SIGINT, SIG_DFL);
+
+      /* stdin: from previous pipe, unless this is the first command
+       */
+      if (index == 0)
+      {
+        if (cmd->rstdin != NULL)
+        {
+          int fd = open(cmd->rstdin, O_RDONLY);
+          if (fd < 0)
+          {
+            perror("open rstdin");
+            exit(1);
+          }
+          dup2(fd, STDIN_FILENO);
+          close(fd);
+        }
+      }
+      else
+      {
+        dup2(pipefds[(index - 1) * 2], STDIN_FILENO);
+      }
+
+      /* stdout: to next pipe, unless this is the last command
+       */
+      if (index == n - 1)
+      {
+        if (cmd->rstdout != NULL)
+        {
+          int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+          if (fd < 0)
+          {
+            perror("open rstdout");
+            exit(1);
+          }
+          dup2(fd, STDOUT_FILENO);
+          close(fd);
+        }
+      }
+      else
+      {
+        dup2(pipefds[index * 2 + 1], STDOUT_FILENO);
+      }
+
+
+      /* Close all pipe fds in the child, since the ones that are
+       * still in use are duplicated to stdin/stdout
+       */
+      for (int i = 0; i < 2 * (n - 1); i++)
+      {
+        close(pipefds[i]);
+      }
+
+      execvp(p->pgmlist[0], p->pgmlist);
+      perror("execvp");
+      exit(1);
     }
-    stdin_fd = fd;
+    else if (pid > 0)
+    {
+      g_foreground = job_push(g_foreground);
+      g_foreground->pid = pid;
+    }
+    else
+    {
+      perror("fork");
+      exit_cleanup(1);
+    }
+
+    p = p->next;
+    index--;
   }
 
-  if (p->rstdout)
+  /* Parent: close all children */
+  for (int i = 0; i < 2 * (n - 1); i++)
   {
-    /* create with permissions: "-rw-r--r--", user R/W, group R and other R
-     */
-    int fd = open(p->rstdout, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    if (fd < 0) 
-    {
-      perror("could not open file for writing");
-
-      /* close the already opened file */
-      if (stdin_fd != STDIN_FILENO) close(stdin_fd);
-      return;
-    }
-    stdout_fd = fd;
+    close(pipefds[i]);
   }
 
-  struct RunInfo ri = {
-    .stdin_fd = stdin_fd,
-    .stdout_fd = stdout_fd,
-    .is_interactive = !p->background,
-    .program = p->pgm->pgmlist[0],
-    .args = p->pgm->pgmlist,
-  };
-
-  pid_t child = run_program(&ri);
-
-  /* Close files */
-  if (stdin_fd != STDIN_FILENO) close(stdin_fd);
-  if (stdout_fd != STDOUT_FILENO) close(stdout_fd);
-
-  /* if the job is to be run in the background, push it to the 
+  /* if the jobs are to be run in the background, push it to the 
    * job list
    */
-  if (p->background)
+  if (cmd->background)
   {
-    g_jobs = job_push(g_jobs);
-    g_jobs->pid = child;
+    g_jobs = job_join(g_foreground, g_jobs);
+    g_foreground = NULL;
   }
-  /* The job is run in the foreground, await termination
+  /* The jobs are run in the foreground, await termination
    */
   else
   {
-    (void)waitpid(child, NULL, 0);
+    job_await_all(&g_foreground, 0);
   }
 }
-
-/*the list for pgm will look like this: 
- *head -> ["wc", "-w", NULL] -> ["grep", "out", NULL] -> ["ls", NULL] -> NULL
- *i.e it will traverse the list in reverse order of the commands in the pipeline
- */
-typedef struct pgm {
-    struct pgm *next;   // points to the PREVIOUS command in the pipeline
-    char **pgmlist;     // argv-style array for this command
-} Pgm;
-
-
 
 /* Count how many programs are in the pipeline */
 static int count_pgms(Pgm *p)
 {
-    int n = 0;
-    while (p != NULL) {
-        n++;
-        p = p->next;
-    }
-    return n;
-}
+  int n = 0;
+  while (p != NULL)
+  {
+    n++;
+    p = p->next;
+  }
 
-/*
- * Execute a full Command (a pipeline of Pgms).
- * cmd->pgm is the LAST command in the pipeline; traversing ->next
- * walks backwards to the FIRST command.
- */
-static void run_command(Command *cmd)
-{
-    int n = count_pgms(cmd->pgm);
-    int pipefds[2 * (n > 1 ? n - 1 : 0)];
-
-    // Create n-1 pipes up front
-    for (int i = 0; i < n - 1; i++) {
-        if (pipe(pipefds + i * 2) < 0) {
-            perror("pipe");
-            exit(1);
-        }
-    }
-
-    /*
-     * Walk the (reverse-order) list and assign each Pgm an index
-     * from 0 (first command executed) to n-1 (last command executed),
-     * so pipefds[i] connects command i's stdout to command i+1's stdin.
-     */
-    Pgm *p = cmd->pgm;
-    int index = n - 1; // p starts at the LAST command
-    pid_t pids[n];
-
-    while (p != NULL) {
-        pid_t pid = fork();
-
-        if (pid == 0) {
-            // ----- CHILD -----
-
-            // stdin: from previous pipe, unless this is the first command
-            if (index == 0) {
-                if (cmd->rstdin != NULL) {
-                    int fd = open(cmd->rstdin, O_RDONLY);
-                    if (fd < 0) { perror("open rstdin"); exit(1); }
-                    dup2(fd, STDIN_FILENO);
-                    close(fd);
-                }
-            } else {
-                dup2(pipefds[(index - 1) * 2], STDIN_FILENO);
-            }
-
-            // stdout: to next pipe, unless this is the last command
-            if (index == n - 1) {
-                if (cmd->rstdout != NULL) {
-                    int fd = open(cmd->rstdout, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                    if (fd < 0) { perror("open rstdout"); exit(1); }
-                    dup2(fd, STDOUT_FILENO);
-                    close(fd);
-                }
-            } else {
-                dup2(pipefds[index * 2 + 1], STDOUT_FILENO);
-            }
-
-            // Close all pipe fds in the child — every single one
-            for (int i = 0; i < 2 * (n - 1); i++) {
-                close(pipefds[i]);
-            }
-
-            execvp(p->pgmlist[0], p->pgmlist);
-            perror("execvp");
-            exit(1);
-        } else if (pid > 0) {
-            pids[index] = pid;
-        } else {
-            perror("fork");
-            exit(1);
-        }
-
-        p = p->next;
-        index--;
-    }
-
-    // ----- PARENT -----
-    for (int i = 0; i < 2 * (n - 1); i++) {
-        close(pipefds[i]);
-    }
-
-    if (!cmd->background) {
-        for (int i = 0; i < n; i++) {
-            waitpid(pids[i], NULL, 0);
-        }
-    }
+  return n;
 }
 
 /* Allocate an uninitialized handle and push it to the linked-list
@@ -502,4 +434,29 @@ void job_await(struct JobHandle *handle, int terminate)
   if (terminate) kill(handle->pid, SIGTERM);
 
   (void)waitpid(handle->pid, NULL, 0);
+}
+
+/* Join two linked lists
+ */
+struct JobHandle* job_join(struct JobHandle *top, struct JobHandle *bottom)
+{
+  if (!top) return bottom;
+
+  struct JobHandle *top_last = top;
+  while (top_last->next)
+  {
+    top_last = top_last->next;
+  }
+
+  top_last->next = bottom;
+  return top;
+}
+
+void job_await_all(struct JobHandle** handle, int terminate)
+{
+  while (*handle)
+  {
+    job_await(*handle, terminate);
+    *handle = job_pop(*handle);
+  }
 }
