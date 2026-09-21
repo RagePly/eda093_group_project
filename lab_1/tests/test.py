@@ -406,12 +406,18 @@ class TestLsh(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    try:
+        tested_by=os.getlogin()
+    except OSError:
+        print("failed to get login-name, you're likely not running this in a login session (perhaps a Docker container).")
+        tested_by="<no login session>"
+
     unittest.main(
         testRunner=HTMLTestRunner(
             title="Operating Systems Lab 1",
             description=f"Unit tests for lsh built from {LSH_CODE}",
             report_name="test-lsh",
-            tested_by=os.getlogin(),
+            tested_by=tested_by,
             open_in_browser=True,
         )
     )
