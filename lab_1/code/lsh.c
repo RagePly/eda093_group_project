@@ -62,7 +62,8 @@ struct JobHandle *g_foreground = NULL;
 
 int main(void)
 {
-  /* Ignore interactive interrupts. This setting is inherited by child-processes
+  /*
+   * The shell ignores ctrl-c
    */
   signal(SIGINT, SIG_IGN);
 
@@ -119,11 +120,12 @@ int main(void)
  */
 void exit_cleanup(int retcode)
 {
+
+  job_await_all(&g_jobs, 1);
+
   /* FIXME: this might not be necessary since we're calling exit, but it's 
    * probably good housekeeping. What's the approach?
    */
-
-  job_await_all(&g_jobs, 1);
   job_await_all(&g_foreground, 1);
 
   exit(retcode);
@@ -277,14 +279,26 @@ void handle_cmd(Command *cmd)
 
     if (pid == 0)
     {
+      /* This child process should be terminated on SIGINT, it's just the shell
+       * that handles this differently...
+       */
+      signal(SIGINT, SIG_DFL);
+
+      /* ...however, if this is a background process, it should be in it's own process
+       * group so that the CTRL-C initiated SIGINT does not reach it
+       */
+      if (cmd->background)
+      {
+        if (setsid() < 0)
+        {
+          perror("failed to change process group for background process");
+          exit(1);
+        }
+      }
+
       /* This process and it's children should use the default SIGCHLD handler
        */
       signal(SIGCHLD, SIG_DFL);
-
-      /* The process should be terminated when an interactive interrupt
-       * is issued (CTRL-C)
-       */
-      if (!cmd->background) signal(SIGINT, SIG_DFL);
 
       /* stdin: from previous pipe, unless this is the first command
        */

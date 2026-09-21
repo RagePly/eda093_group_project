@@ -79,6 +79,37 @@ To complete the lab successfully, you will have to study the manual pages for va
 For some of them, e.g., `exec()`, several **variants** exist.
 You need to determine which one best suits your needs; sometimes, more than one is suitable.
 
+# Using `rptree` for Debugging
+
+We have made a small program (two, actually) that can help you visualise the child processes that your shell makes, and see file redirection and pipes between them.
+
+Tutorial video: [(Youtube Link)](https://www.youtube.com/watch?v=9KO8XPSNHqc&t=251s)
+
+Two useful programs, both of which live [in this github repo](https://github.com/j4cobgarby/rptree):
+
+ - `rptree` displays a UI which in realtime shows the process tree and info under a specific process.
+ - `traceme` runs a program (i.e. your shell) under a mode which allows other processes (i.e. `rptree`) to trace its execution, thereby being able to draw the process tree. If you don't have superuser access (sudo), you must use traceme. Otherwise, you just need `rptree`.
+ 
+## Building/installing
+
+ 1. Clone the [github repo](https://github.com/j4cobgarby/rptree).
+ 2. `cd` into it and type `make`.
+ 3. You should now have two executables: `rptree` and `traceme`.
+ 4. You can either invoke them by specifying their path, or (easier) add the rptree directory to your path (`export PATH=<path to rptree directory>:$PATH`), after which you can easily invoke rptree as simply `rptree`.
+
+## Usage
+ 
+Once you are running `rptree` attached to your shell (by running `rptree <path to your lsh>`), you will see two panels. The top panel shows a log of all forks, execs, and exits. 
+
+The bottom panel shows a visual tree of all the shell's child processes. It also has a column showing the current stdout and stdin files, which is useful for visualising pipelines. There is also information about the progress group which each process is in (pgrp), and the currently active foreground process group (tpgid). This can be useful if you use process groups in your shell (recommended).
+
+This should "just work", but some things to know:
+
+ - There's an intermittent bug which I haven't yet fixed, where the `tpgid` column sometimes is outdated.
+ - It **only works on Linux** due to using ptrace -- sorry to Mac users.
+ - You can watch the yt video linked above for a demonstration.
+ - There's also more detailed usage info in the github repo.
+
 # Using `top` for Debugging
 
 Use `top` to monitor your `lsh` processes.
