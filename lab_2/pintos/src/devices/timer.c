@@ -4,6 +4,7 @@
 #include <round.h>
 #include <stdio.h>
 #include "devices/pit.h"
+#include "list.h"
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
@@ -24,6 +25,8 @@ static int64_t ticks;
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
 
+static struct list awaiting_list;
+
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
@@ -35,6 +38,7 @@ static void real_time_delay (int64_t num, int32_t denom);
 void
 timer_init (void) 
 {
+  list_init (&awaiting_list);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 }
@@ -90,10 +94,38 @@ void
 timer_sleep (int64_t ticks) 
 {
   int64_t start = timer_ticks ();
-
+  int64_t target_tick = start + ticks;
+  
+  ASSERT (target_tick >= start); /* just in case we have overflow */
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  struct thread *this = thread_current ();
+  sema_init(&this->await_sem, 0);
+  this->awaiting_tick = target_tick;
+
+  /* in-sort the thread */
+  int has_inserted = 0;
+  struct list_elem *e = list_head (&awaiting_list);
+
+  if (!list_empty(&awaiting_list))
+  {
+    do  
+    {
+      struct thread *that_thread = list_entry(e, struct thread, await_elem);
+      if (that_thread->awaiting_tick > target_tick) {
+        list_insert(e, &this->await_elem);
+        has_inserted = 1;
+      }
+    } while (!has_inserted && (e = list_next (e)) != list_end (&awaiting_list));
+  }
+
+  /* This target_tick is the furthest in the future */
+  if (!has_inserted) {
+    list_push_back(&awaiting_list, &this->await_elem);
+  }
+
+  /* Await the timer-handler to increase the semaphore when target_tick is met */
+  sema_down(&this->await_sem);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -166,11 +198,13 @@ timer_print_stats (void)
   printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
 
+
 /* Timer interrupt handler. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+  timer_handle_awaiting ();
   thread_tick ();
 }
 
@@ -243,4 +277,16 @@ real_time_delay (int64_t num, int32_t denom)
      the possibility of overflow. */
   ASSERT (denom % 1000 == 0);
   busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
+}
+
+void timer_handle_awaiting (void)
+{
+  struct list_elem *top = list_head (&awaiting_list);
+  if (!top) return;
+  struct thread * thread_top = list_entry(top, struct thread, await_elem);
+  if (ticks > thread_top->awaiting_tick)
+  {
+    sema_up(&thread_top->await_sem);
+    (void)list_pop_front(&awaiting_list);
+  }
 }
