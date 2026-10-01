@@ -93,6 +93,7 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
+  if (ticks <= 0) return;
   int64_t start = timer_ticks ();
   int64_t target_tick = start + ticks;
   
@@ -100,32 +101,15 @@ timer_sleep (int64_t ticks)
   ASSERT (intr_get_level () == INTR_ON);
 
   struct thread *this = thread_current ();
-  sema_init(&this->await_sem, 0);
   this->awaiting_tick = target_tick;
+  sema_init(&this->await_sem, 0);
 
-  /* in-sort the thread */
-  int has_inserted = 0;
-  struct list_elem *e = list_head (&awaiting_list);
-
-  if (!list_empty(&awaiting_list))
-  {
-    do  
-    {
-      struct thread *that_thread = list_entry(e, struct thread, await_elem);
-      if (that_thread->awaiting_tick > target_tick) {
-        list_insert(e, &this->await_elem);
-        has_inserted = 1;
-      }
-    } while (!has_inserted && (e = list_next (e)) != list_end (&awaiting_list));
-  }
-
-  /* This target_tick is the furthest in the future */
-  if (!has_inserted) {
-    list_push_back(&awaiting_list, &this->await_elem);
-  }
-
+  enum intr_level old_level = intr_disable();
+  list_push_back(&awaiting_list, &this->await_elem); 
+  intr_set_level(old_level);
   /* Await the timer-handler to increase the semaphore when target_tick is met */
   sema_down(&this->await_sem);
+  
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -281,12 +265,20 @@ real_time_delay (int64_t num, int32_t denom)
 
 void timer_handle_awaiting (void)
 {
-  struct list_elem *top = list_head (&awaiting_list);
-  if (!top) return;
-  struct thread * thread_top = list_entry(top, struct thread, await_elem);
-  if (ticks > thread_top->awaiting_tick)
-  {
-    sema_up(&thread_top->await_sem);
-    (void)list_pop_front(&awaiting_list);
-  }
+  struct list_elem *e = list_begin (&awaiting_list);
+
+  while (e != list_end (&awaiting_list))
+    {
+      struct thread *t = list_entry (e, struct thread, await_elem);
+
+      if (ticks >= t->awaiting_tick)
+        {
+          e = list_remove (e);
+          sema_up (&t->await_sem);
+        }
+      else
+        {
+          e = list_next (e);
+        }
+    }
 }
