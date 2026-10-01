@@ -88,6 +88,13 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+
+bool less_than(const struct list_elem *a, const struct list_elem *b, void *aux) 
+{
+  struct thread *thread_a = list_entry (a, struct thread, await_elem);
+  struct thread *thread_b = list_entry (b, struct thread, await_elem);
+  return (thread_a->awaiting_tick < thread_b->awaiting_tick);
+}
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
@@ -105,7 +112,8 @@ timer_sleep (int64_t ticks)
   sema_init(&this->await_sem, 0);
 
   enum intr_level old_level = intr_disable();
-  list_push_back(&awaiting_list, &this->await_elem); 
+  // list_push_back(&awaiting_list, &this->await_elem); 
+  list_insert_ordered(&awaiting_list, &this->await_elem, less_than, NULL);
   intr_set_level(old_level);
   /* Await the timer-handler to increase the semaphore when target_tick is met */
   sema_down(&this->await_sem);
@@ -278,7 +286,8 @@ void timer_handle_awaiting (void)
         }
       else
         {
-          e = list_next (e);
+          break;
+//          e = list_next (e);
         }
     }
 }
