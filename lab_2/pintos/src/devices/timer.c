@@ -88,22 +88,30 @@ timer_elapsed (int64_t then)
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
-timer_sleep (int64_t ticks) 
+timer_sleep (int64_t ticks)
 {
+  /* Make sure that no scheduling decision is taken until the
+     target_tick is calculated */
   intr_set_level(INTR_OFF);
 
-  if (ticks <= 0) {
+  if (ticks <= 0)
+  {
+    /* No point in sleeping, give back control */
     intr_set_level(INTR_ON);
     return;
   }
 
+  /* Calculate the target tick-value */
   int64_t start = timer_ticks ();
   int64_t end = start + ticks;
 
+  /* Assign target_tick and mark this thread as sleeping */
   struct thread *this = thread_current ();
-
   this->target_tick = end;
   this->sleeping = 1;
+
+  /* Block, until thread_interrupt discovers the thread has
+     slept enough */
   thread_block ();
 }
 
@@ -184,12 +192,15 @@ check_sleeping_threads (struct thread *thread, void *aux)
 {
   (void)aux;
 
-
+  /* This thread is not sleeping or the target_tick is
+     in the future */
   if (!thread->sleeping || thread->target_tick > ticks)
   {
     return;
   }
 
+  /* The thread should be awakened, unmark the thread as
+     as sleeping thread */
   thread->sleeping = 0;
   thread_unblock(thread);
 }
@@ -200,6 +211,8 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
 
+  /* Loop through each thread and check for threads that have
+     finished execution sleeping */
   thread_foreach(check_sleeping_threads, NULL);
 
   thread_tick ();
