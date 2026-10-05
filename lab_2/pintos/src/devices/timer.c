@@ -117,11 +117,15 @@ timer_sleep (int64_t ticks)
   enum intr_level old_level = intr_disable();
   list_insert_ordered(&awaiting_list, &this->await_elem, 
       target_tick_earlier_than, NULL);
-  intr_set_level(old_level);
 
-  /* Await the timer-handler to increase the semaphore when target_tick is met */
-  sema_down(&this->await_sem);
-  
+  /* Don't restore the interrupt level, since we will also block the
+   * thread */
+
+  /* Await the timer-handler to unblock once the target_tick is met */
+  thread_block();
+
+  /* Restore the interrupt level */
+  intr_set_level(old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -286,7 +290,8 @@ void timer_handle_awaiting (void)
       if (ticks >= t->awaiting_tick)
         {
           e = list_remove (e);
-          sema_up (&t->await_sem);
+          ASSERT(t->status == THREAD_BLOCKED);
+          thread_unblock(t);
         }
       else
         {

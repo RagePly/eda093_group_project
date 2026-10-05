@@ -97,7 +97,6 @@ struct thread
     /* Owned by devices/timer.c */
     struct list_elem await_elem;
     int64_t awaiting_tick;
-    struct semaphore await_sem;
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
