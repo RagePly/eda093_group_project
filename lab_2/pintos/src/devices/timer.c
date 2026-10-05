@@ -4,6 +4,7 @@
 #include <round.h>
 #include <stdio.h>
 #include "devices/pit.h"
+#include "list.h"
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
@@ -24,6 +25,10 @@ static int64_t ticks;
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
 
+static struct list awaiting_list;
+bool target_tick_earlier_than(const struct list_elem *a, const struct list_elem *b, void *aux);
+void timer_handle_awaiting (void);
+
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
@@ -35,6 +40,7 @@ static void real_time_delay (int64_t num, int32_t denom);
 void
 timer_init (void) 
 {
+  list_init (&awaiting_list);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 }
@@ -84,16 +90,43 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+
+bool target_tick_earlier_than(const struct list_elem *a, const struct list_elem *b, void *aux) 
+{
+  (void)aux;
+  struct thread *thread_a = list_entry (a, struct thread, await_elem);
+  struct thread *thread_b = list_entry (b, struct thread, await_elem);
+  return (thread_a->awaiting_tick < thread_b->awaiting_tick);
+}
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
 timer_sleep (int64_t ticks) 
 {
+  if (ticks <= 0) return;
   int64_t start = timer_ticks ();
-
+  int64_t target_tick = start + ticks;
+  
+  ASSERT (target_tick >= start); /* just in case we have overflow */
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  struct thread *this = thread_current ();
+  this->awaiting_tick = target_tick;
+
+  /* Disable interrupts, to ensure that the awaiting list is not
+   * modified by either another timer_sleep OR timer_interrupt */
+  enum intr_level old_level = intr_disable();
+  list_insert_ordered(&awaiting_list, &this->await_elem, 
+      target_tick_earlier_than, NULL);
+
+  /* Don't restore the interrupt level, since we will also block the
+   * thread */
+
+  /* Await the timer-handler to unblock once the target_tick is met */
+  thread_block();
+
+  /* Restore the interrupt level */
+  intr_set_level(old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -166,11 +199,13 @@ timer_print_stats (void)
   printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
 
+
 /* Timer interrupt handler. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+  timer_handle_awaiting ();
   thread_tick ();
 }
 
@@ -243,4 +278,25 @@ real_time_delay (int64_t num, int32_t denom)
      the possibility of overflow. */
   ASSERT (denom % 1000 == 0);
   busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
+}
+
+void timer_handle_awaiting (void)
+{
+  struct list_elem *e = list_begin (&awaiting_list);
+
+  while (e != list_end (&awaiting_list))
+    {
+      struct thread *t = list_entry (e, struct thread, await_elem);
+
+      if (ticks >= t->awaiting_tick)
+        {
+          e = list_remove (e);
+          ASSERT(t->status == THREAD_BLOCKED);
+          thread_unblock(t);
+        }
+      else
+        {
+          break;
+        }
+    }
 }

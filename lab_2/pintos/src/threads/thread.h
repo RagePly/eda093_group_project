@@ -1,6 +1,7 @@
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
+#include "threads/synch.h"
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
@@ -92,6 +93,10 @@ struct thread
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+
+    /* Owned by devices/timer.c */
+    struct list_elem await_elem;
+    int64_t awaiting_tick;
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
