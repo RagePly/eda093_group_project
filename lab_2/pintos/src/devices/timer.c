@@ -111,7 +111,6 @@ timer_sleep (int64_t ticks)
 
   struct thread *this = thread_current ();
   this->awaiting_tick = target_tick;
-  sema_init(&this->await_sem, 0);
 
   /* Disable interrupts, to ensure that the awaiting list is not
    * modified by either another timer_sleep OR timer_interrupt */
