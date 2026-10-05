@@ -27,6 +27,7 @@ static unsigned loops_per_tick;
 
 static struct list awaiting_list;
 bool target_tick_earlier_than(const struct list_elem *a, const struct list_elem *b, void *aux);
+void timer_handle_awaiting (void);
 
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
