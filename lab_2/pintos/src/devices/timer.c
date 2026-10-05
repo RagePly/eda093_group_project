@@ -25,7 +25,9 @@ static int64_t ticks;
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
 
+static struct semaphore awaiting_list_sem;
 static struct list awaiting_list;
+bool target_tick_earlier_than(const struct list_elem *a, const struct list_elem *b, void *aux);
 
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
@@ -38,6 +40,7 @@ static void real_time_delay (int64_t num, int32_t denom);
 void
 timer_init (void) 
 {
+  sema_init(&awaiting_list_sem, 1);
   list_init (&awaiting_list);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
@@ -89,8 +92,9 @@ timer_elapsed (int64_t then)
 }
 
 
-bool less_than(const struct list_elem *a, const struct list_elem *b, void *aux) 
+bool target_tick_earlier_than(const struct list_elem *a, const struct list_elem *b, void *aux) 
 {
+  (void)aux;
   struct thread *thread_a = list_entry (a, struct thread, await_elem);
   struct thread *thread_b = list_entry (b, struct thread, await_elem);
   return (thread_a->awaiting_tick < thread_b->awaiting_tick);
@@ -111,10 +115,11 @@ timer_sleep (int64_t ticks)
   this->awaiting_tick = target_tick;
   sema_init(&this->await_sem, 0);
 
-  enum intr_level old_level = intr_disable();
-  // list_push_back(&awaiting_list, &this->await_elem); 
-  list_insert_ordered(&awaiting_list, &this->await_elem, less_than, NULL);
-  intr_set_level(old_level);
+  sema_down(&awaiting_list_sem);
+  list_insert_ordered(&awaiting_list, &this->await_elem, 
+      target_tick_earlier_than, NULL);
+  sema_up(&awaiting_list_sem);
+
   /* Await the timer-handler to increase the semaphore when target_tick is met */
   sema_down(&this->await_sem);
   
@@ -287,7 +292,6 @@ void timer_handle_awaiting (void)
       else
         {
           break;
-//          e = list_next (e);
         }
     }
 }
