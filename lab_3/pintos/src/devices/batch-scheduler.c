@@ -79,7 +79,9 @@ static void release_slot (const task_t *task);
 int tasks = 0;
 direction_t direction;
 struct lock bus;
-struct condition waitingToGo[2][2];
+struct condition waitingToGo[2];
+struct condition lowPrio;
+int priority_count = 0;
 int waiting_prio = 0;
 
 
@@ -90,10 +92,9 @@ void init_bus (void) {
   /* TODO: Initialize global/static variables,
      e.g. your condition variables, locks, counters etc */
   lock_init(&bus);
-  cond_init(&waitingToGo[0][0]);
-  cond_init(&waitingToGo[0][1]);
-  cond_init(&waitingToGo[1][0]);
-  cond_init(&waitingToGo[1][1]);
+  cond_init(&waitingToGo[0]);
+  cond_init(&waitingToGo[1]);
+  cond_init(&lowPrio);
 }
 
 void batch_scheduler (unsigned int num_priority_send,
@@ -192,18 +193,22 @@ void get_slot (const task_t *task) {
   lock_acquire(&bus);
   if (task->priority == PRIORITY)
   {
-    waiting_prio ++;
+    priority_count ++;
+  }
+
+  while (task->priority == NORMAL && priority_count > 0) {
+    cond_wait(&lowPrio, &bus);
   }
 
   /* Await prio slot */
-  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction) || (task->priority == NORMAL && waiting_prio > 0))
+  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction))
   {
-      cond_wait(&waitingToGo[task->direction][task->priority], &bus);
+      cond_wait(&waitingToGo[task->direction], &bus);
   }
 
   if (task->priority == PRIORITY)
   {
-    waiting_prio --;
+    priority_count --;
   }
 
   tasks ++;
@@ -232,9 +237,14 @@ void release_slot (const task_t *task) {
   lock_acquire(&bus);
   tasks --;
 
-  if (!list_empty(&waitingToGo[task->direction][PRIORITY].waiters))
+  if (priority_count == 0) {
+    cond_broadcast(&lowPrio);
+  }
+  
+  // TODO: cleanup, vvv is for old code
+  if (!list_empty(&waitingToGo[task->direction].waiters))
   {
-    cond_signal(&waitingToGo[task->direction][PRIORITY], &bus);
+    cond_signal(&waitingToGo[task->direction], &bus);
   }
   else if (list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters) && !list_empty(&waitingToGo[task->direction][NORMAL].waiters))
   {
