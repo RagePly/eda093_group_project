@@ -79,7 +79,8 @@ static void release_slot (const task_t *task);
 int tasks = 0;
 direction_t direction;
 struct lock bus;
-struct condition waitingToGo[2];
+struct condition waitingToGo[2][2];
+int waiting_prio = 0;
 
 
 void init_bus (void) {
@@ -89,8 +90,10 @@ void init_bus (void) {
   /* TODO: Initialize global/static variables,
      e.g. your condition variables, locks, counters etc */
   lock_init(&bus);
-  cond_init(&waitingToGo[0]);
-  cond_init(&waitingToGo[1]);
+  cond_init(&waitingToGo[0][0]);
+  cond_init(&waitingToGo[0][1]);
+  cond_init(&waitingToGo[1][0]);
+  cond_init(&waitingToGo[1][1]);
 }
 
 void batch_scheduler (unsigned int num_priority_send,
@@ -187,8 +190,20 @@ static direction_t other_direction(direction_t this_direction) {
 void get_slot (const task_t *task) {
 
   lock_acquire(&bus);
-  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction)) {
-    cond_wait(&waitingToGo[task->direction], &bus);
+  if (task->priority == PRIORITY)
+  {
+    waiting_prio ++;
+  }
+
+  /* Await prio slot */
+  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction) || (task->priority == NORMAL && waiting_prio > 0))
+  {
+      cond_wait(&waitingToGo[task->direction][task->priority], &bus);
+  }
+
+  if (task->priority == PRIORITY)
+  {
+    waiting_prio --;
   }
 
   tasks ++;
@@ -217,11 +232,24 @@ void release_slot (const task_t *task) {
   lock_acquire(&bus);
   tasks --;
 
-  if (!list_empty(&waitingToGo[task->direction].waiters)) {
-    cond_signal(&waitingToGo[task->direction], &bus);
+  if (!list_empty(&waitingToGo[task->direction][PRIORITY].waiters))
+  {
+    cond_signal(&waitingToGo[task->direction][PRIORITY], &bus);
   }
-  else if (tasks == 0) {
-    cond_broadcast(&waitingToGo[other_direction(task->direction)], &bus);
+  else if (list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters) && !list_empty(&waitingToGo[task->direction][NORMAL].waiters))
+  {
+    cond_signal(&waitingToGo[task->direction][NORMAL], &bus);
+  }
+  else if (tasks == 0)
+  {
+    if (!list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters))
+    {
+      cond_broadcast(&waitingToGo[other_direction(task->direction)][PRIORITY], &bus);
+    }
+    else
+    {
+      cond_broadcast(&waitingToGo[other_direction(task->direction)][NORMAL], &bus);
+    }
   }
 
   lock_release(&bus);
