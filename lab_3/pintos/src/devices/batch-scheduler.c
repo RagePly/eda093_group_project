@@ -1,8 +1,7 @@
 /*
  * Exercise on thread synchronization.
  *
- * Assume a half-duplex communication bus with limited capacity, measured in
- * tasks, and 2 priority levels:
+ * Assume a half-duplex communication bus with limited capacity, measured in tasks, and 2 priority levels:
  *
  * - tasks: A task signifies a unit of data communication over the bus
  *
@@ -76,12 +75,22 @@ static void transfer_data (const task_t *task);
 /* Releases the slot */
 static void release_slot (const task_t *task);
 
+/* Global Variables */
+int tasks = 0;
+direction_t direction;
+struct lock bus;
+struct condition waitingToGo[2];
+
+
 void init_bus (void) {
 
   random_init ((unsigned int)123456789);
 
   /* TODO: Initialize global/static variables,
      e.g. your condition variables, locks, counters etc */
+  lock_init(&bus);
+  cond_init(&waitingToGo[0]);
+  cond_init(&waitingToGo[1]);
 }
 
 void batch_scheduler (unsigned int num_priority_send,
@@ -177,6 +186,15 @@ static direction_t other_direction(direction_t this_direction) {
 
 void get_slot (const task_t *task) {
 
+  lock_acquire(&bus);
+  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction)) {
+    cond_wait(&waitingToGo[task->direction], &bus);
+  }
+
+  tasks ++;
+  direction = task->direction;
+  lock_release(&bus);
+
   /* TODO: Try to get a slot, respect the following rules:
    *        1. There can be only BUS_CAPACITY tasks using the bus
    *        2. The bus is half-duplex: All tasks using the bus should be either
@@ -196,6 +214,17 @@ void transfer_data (const task_t *task) {
 }
 
 void release_slot (const task_t *task) {
+  lock_acquire(&bus);
+  tasks --;
+
+  if (!list_empty(&waitingToGo[task->direction].waiters)) {
+    cond_signal(&waitingToGo[task->direction], &bus);
+  }
+  else if (tasks == 0) {
+    cond_broadcast(&waitingToGo[other_direction(task->direction)], &bus);
+  }
+
+  lock_release(&bus);
 
   /* TODO: Release the slot, think about the actions you need to perform:
    *       - Do you need to notify any waiting task?
