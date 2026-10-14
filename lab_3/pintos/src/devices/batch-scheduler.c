@@ -75,25 +75,40 @@ static void transfer_data (const task_t *task);
 /* Releases the slot */
 static void release_slot (const task_t *task);
 
-/* Global Variables */
-int tasks = 0;
-direction_t direction;
-struct lock bus;
-struct condition waitingToGo[2][2];
-int waiting_prio = 0;
+/* The capacity of the bus: number of tasks occupying it*/
+static int tasks;
+
+/* Current direction of the bus */
+static direction_t direction;
+
+/* The bus-lock */
+static struct lock bus;
+
+/* Condition variables; conditions for each category 
+ * direction_t x priority_t */
+static struct condition waitingToGo[2][2];
+
+/* Total number of priority tasks that are currently waiting */
+static int waiting_prio;
 
 
 void init_bus (void) {
 
   random_init ((unsigned int)123456789);
 
-  /* TODO: Initialize global/static variables,
-     e.g. your condition variables, locks, counters etc */
+  /* Initialize the bus-lock */
   lock_init(&bus);
+
+  /* Initialize condition variables */
   cond_init(&waitingToGo[0][0]);
   cond_init(&waitingToGo[0][1]);
   cond_init(&waitingToGo[1][0]);
   cond_init(&waitingToGo[1][1]);
+
+  /* Initialize all counter/state variables */
+  tasks = 0;
+  direction = NUM_OF_DIRECTIONS;
+  waiting_prio = 0;
 }
 
 void batch_scheduler (unsigned int num_priority_send,
@@ -188,39 +203,47 @@ static direction_t other_direction(direction_t this_direction) {
 }
 
 void get_slot (const task_t *task) {
-
   lock_acquire(&bus);
+
+  /* If task has priority, increase the *total* number of waiting priority tasks */
   if (task->priority == PRIORITY)
   {
     waiting_prio ++;
   }
 
-  /* Await prio slot */
-  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction) || (task->priority == NORMAL && waiting_prio > 0))
+  /* Await a slot, which is only possible if the bus has capacity, it's either empty
+   * or in the same direction and there are no higher priority tasks waiting */
+  while (tasks == BUS_CAPACITY || 
+      (tasks > 0 && other_direction(task->direction) == direction) || 
+      (task->priority == NORMAL && waiting_prio > 0))
   {
       cond_wait(&waitingToGo[task->direction][task->priority], &bus);
   }
 
+
+  /* This task can execute, thus increase the utilization of bus and also set the
+   * direction to be eequal to this task's direction */
+  tasks ++;
+  direction = task->direction;
+
+  /* If task has priority, decrease the *total* number of waiting priority tasks */
   if (task->priority == PRIORITY)
   {
     waiting_prio --;
+
+    /* There are no high priority tasks waiting, the bus has capacity and there are 
+     * normal priority tasks waiting; wake up normal tasks to allow them to run */
+    if (waiting_prio == 0 &&
+        tasks < BUS_CAPACITY &&
+        !list_empty(&waitingToGo[direction][NORMAL].waiters))
+    {
+      /* broadcast, since it could be more than one task waiting and the capacity could
+       * allow it */
+      cond_broadcast(&waitingToGo[direction][NORMAL], &bus);
+    }
   }
 
-  tasks ++;
-  direction = task->direction;
   lock_release(&bus);
-
-  /* TODO: Try to get a slot, respect the following rules:
-   *        1. There can be only BUS_CAPACITY tasks using the bus
-   *        2. The bus is half-duplex: All tasks using the bus should be either
-   * sending or receiving
-   *        3. A normal task should not get the bus if there are priority tasks
-   * waiting
-   *
-   * You do not need to guarantee fairness or freedom from starvation:
-   * feel free to schedule priority tasks of the same direction,
-   * even if there are priority tasks of the other direction waiting
-   */
 }
 
 void transfer_data (const task_t *task) {
@@ -230,22 +253,36 @@ void transfer_data (const task_t *task) {
 
 void release_slot (const task_t *task) {
   lock_acquire(&bus);
+
+  /* Decrase the utilization of the bus */
   tasks --;
 
+  /* Wake up high priority tasks in the same direction */
   if (!list_empty(&waitingToGo[task->direction][PRIORITY].waiters))
   {
     cond_signal(&waitingToGo[task->direction][PRIORITY], &bus);
   }
-  else if (list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters) && !list_empty(&waitingToGo[task->direction][NORMAL].waiters))
+
+  /* If there are no priority tasks waiting in the other direction, wake up
+   * normal tasks in the same direction */
+  else if (list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters) 
+      && !list_empty(&waitingToGo[task->direction][NORMAL].waiters))
   {
     cond_signal(&waitingToGo[task->direction][NORMAL], &bus);
   }
+
+  /* This bus is open, let through tasks in the other direction */
   else if (tasks == 0)
   {
+    /* Wake up all high priority tasks in the other direction, if there are any ... */
     if (!list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters))
     {
+      /* NOTE: if normal tasks are waiting, they will be woken up once all
+       * priority tasks are scheduled by get_slot () */
       cond_broadcast(&waitingToGo[other_direction(task->direction)][PRIORITY], &bus);
     }
+
+    /* ... otherwise wake up all normal priority tasks in the other direction */
     else
     {
       cond_broadcast(&waitingToGo[other_direction(task->direction)][NORMAL], &bus);
@@ -253,9 +290,4 @@ void release_slot (const task_t *task) {
   }
 
   lock_release(&bus);
-
-  /* TODO: Release the slot, think about the actions you need to perform:
-   *       - Do you need to notify any waiting task?
-   *       - Do you need to increment/decrement any counter?
-   */
 }
