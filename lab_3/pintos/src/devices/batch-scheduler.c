@@ -82,7 +82,6 @@ struct lock bus;
 struct condition waitingToGo[2];
 struct condition lowPrio;
 int priority_count = 0;
-int waiting_prio = 0;
 
 
 void init_bus (void) {
@@ -195,20 +194,24 @@ void get_slot (const task_t *task) {
   {
     priority_count ++;
   }
-
-  while (task->priority == NORMAL && priority_count > 0) {
-    cond_wait(&lowPrio, &bus);
-  }
-
-  /* Await prio slot */
-  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction))
+  
+  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction) || task->priority == NORMAL && priority_count > 0)
   {
-      cond_wait(&waitingToGo[task->direction], &bus);
+    if (task->priority == NORMAL && priority_count > 0)
+    {
+      cond_wait(&lowPrio, &bus);
+      continue;
+    }  
+    cond_wait(&waitingToGo[task->direction], &bus);
   }
 
   if (task->priority == PRIORITY)
   {
     priority_count --;
+    if (priority_count == 0)
+    {
+      cond_broadcast(&lowPrio, &bus);
+    }
   }
 
   tasks ++;
@@ -237,29 +240,13 @@ void release_slot (const task_t *task) {
   lock_acquire(&bus);
   tasks --;
 
-  if (priority_count == 0) {
-    cond_broadcast(&lowPrio);
-  }
-  
-  // TODO: cleanup, vvv is for old code
   if (!list_empty(&waitingToGo[task->direction].waiters))
   {
-    cond_signal(&waitingToGo[task->direction], &bus);
-  }
-  else if (list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters) && !list_empty(&waitingToGo[task->direction][NORMAL].waiters))
-  {
-    cond_signal(&waitingToGo[task->direction][NORMAL], &bus);
-  }
+    cond_signal(&waitingToGo[task->direction], &bus);  
+  }  
   else if (tasks == 0)
   {
-    if (!list_empty(&waitingToGo[other_direction(task->direction)][PRIORITY].waiters))
-    {
-      cond_broadcast(&waitingToGo[other_direction(task->direction)][PRIORITY], &bus);
-    }
-    else
-    {
-      cond_broadcast(&waitingToGo[other_direction(task->direction)][NORMAL], &bus);
-    }
+    cond_broadcast(&waitingToGo[other_direction(task->direction)], &bus);
   }
 
   lock_release(&bus);
