@@ -190,27 +190,32 @@ static direction_t other_direction(direction_t this_direction) {
 void get_slot (const task_t *task) {
 
   lock_acquire(&bus);
+  /* Priority tasks increase count */
   if (task->priority == PRIORITY)
   {
     priority_count ++;
   }
-  
+  /* Wait if bus on max capacity or bus is occupied in other 
+     direction or priority tasks are waiting and task is normal */
   while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction) || task->priority == NORMAL && priority_count > 0)
   {
-    if (task->priority == NORMAL && priority_count > 0)
+    if (task->priority == NORMAL && priority_count > 0) 
     {
-      cond_wait(&lowPrio, &bus);
-      continue;
-    }  
-    cond_wait(&waitingToGo[task->direction], &bus);
+      cond_wait(&lowPrio, &bus); /* Low priority queue */
+    }
+    else
+    {
+      cond_wait(&waitingToGo[task->direction], &bus); /* Queue waiting for other direction */
+    }
   }
-
+  /* Decrease priority count */ 
   if (task->priority == PRIORITY)
   {
     priority_count --;
+    /* Wake up all low priority if no priority is waiting */
     if (priority_count == 0)
     {
-      cond_broadcast(&lowPrio, &bus);
+      cond_broadcast(&lowPrio, &bus); 
     }
   }
 
@@ -239,11 +244,12 @@ void transfer_data (const task_t *task) {
 void release_slot (const task_t *task) {
   lock_acquire(&bus);
   tasks --;
-
+  /* Wake up a single task going in the same direction */
   if (!list_empty(&waitingToGo[task->direction].waiters))
   {
     cond_signal(&waitingToGo[task->direction], &bus);  
   }  
+  /* Wake up all tasks waiting for other direction */
   else if (tasks == 0)
   {
     cond_broadcast(&waitingToGo[other_direction(task->direction)], &bus);
