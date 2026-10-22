@@ -197,10 +197,22 @@ void get_slot (const task_t *task) {
   }
   /* Wait if bus on max capacity or bus is occupied in other 
      direction or priority tasks are waiting and task is normal */
-  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction) || task->priority == NORMAL && priority_count > 0)
+  while (tasks == BUS_CAPACITY || (tasks > 0 && other_direction(task->direction) == direction) || (task->priority == NORMAL && priority_count > 0))
   {
     if (task->priority == NORMAL && priority_count > 0) 
     {
+      /* If there is capacity but this task can't be scheduled due to low priority, propagate
+       * the signal until a high priority task picks it up */
+      if (tasks < BUS_CAPACITY && !list_empty(&waitingToGo[task->direction].waiters))
+      {
+        cond_signal(&waitingToGo[task->direction], &bus);
+      }
+      /* The high priority task is in the other direction, continue waking
+       * up tasks until it is found */
+      else if (tasks < BUS_CAPACITY)
+      {
+        cond_signal(&waitingToGo[other_direction(task->direction)], &bus);
+      }
       cond_wait(&lowPrio, &bus); /* Low priority queue */
     }
     else
